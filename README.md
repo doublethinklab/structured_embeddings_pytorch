@@ -65,3 +65,49 @@ The `dat_stats` dict has:
 #### 4. [Negative sampling](https://github.com/mariru/structured_embeddings/blob/master/dat/step_4_negative_samples.py)
 
 
+### Forward Pass
+
+Using heirarchical model as the example.
+
+Assume:
+- `cs` = 8
+- `ns` = 4
+- `n_batch` = 2
+
+```python
+p_mask = tf.range(int(cs/2), n_batch + int(cs/2))
+```
+
+> <tf.Tensor: shape=(2,), dtype=int32, numpy=array([4, 5], dtype=int32)>
+
+```python
+rows = tf.tile(tf.expand_dims(tf.range(0, int(cs/2)),[0]), [n_batch, 1])
+```
+
+> <tf.Tensor: shape=(2, 4), dtype=int32, numpy=
+array([[0, 1, 2, 3],
+       [0, 1, 2, 3]], dtype=int32)>
+
+```python
+z = tf.expand_dims(tf.range(0, n_batch), [1])
+cols = tf.tile(z, [1, int(cs/2)])
+```
+
+> <tf.Tensor: shape=(2, 4), dtype=int32, numpy=
+array([[0, 0, 0, 0],
+       [1, 1, 1, 1]], dtype=int32)>
+
+```python
+ctx_mask = tf.concat([rows+cols, rows+cols+4+1], 1)
+```
+
+> <tf.Tensor: shape=(2, 8), dtype=int32, numpy=
+array([[0, 1, 2, 3, 5, 6, 7, 8],
+       [1, 2, 3, 4, 6, 7, 8, 9]], dtype=int32)>
+
+So we're dealing with column vectors and we have these convenient masks for
+selecting the indices from the data array, which can then be used as vector
+lookup.
+
+Pytorch deals with row vectors, so we could transpose this mask, or rewrite the
+code for row vectors.

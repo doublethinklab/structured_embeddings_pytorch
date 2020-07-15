@@ -4,28 +4,48 @@ Pytorch implementation of:
 https://github.com/mariru/structured_embeddings
 https://papers.nips.cc/paper/6629-structured-embedding-models-for-grouped-data
 """
-from typing import Optional
+from typing import Optional, Sequence
 
 import torch
 from torch import distributions, nn
 
 
-class Batch:
+class StateBatch:
+    """Batch for a state.
 
-    def __init__(self):
-        pass
+    NOTE: as opposed to the original TensorFlow implementation, masks for
+      vector selection are done by the DataLoader in this PyTorch implementation
+      to exploit parallelization.
+    """
+
+    def __init__(self, target_ixs: torch.LongTensor,
+                 context_ixs: torch.LongTensor,
+                 negative_sample_ixs: torch.LongTensor):
+        self.target_ixs = target_ixs
+        self.context_ixs = context_ixs
+        self.negative_sample_ixs = negative_sample_ixs
+
+
+class Batch:
+    """Full batch object.
+
+    Wraps the state batches.
+    """
+
+    def __init__(self, states: Sequence[StateBatch]):
+        self.states = states
 
 
 class HierarchicalBernoulliEmbeddings(nn.Module):
 
-    def __init__(self, context_size: int, negative_samples: int, n_vocab: int,
+    def __init__(self, n_context: int, n_negative_samples: int, n_vocab: int,
                  n_dim: int, n_states: int, unigram_logits: torch.Tensor,
                  sigma: float):
         """Create a new Hierarchical Bernoulli model.
 
         Args:
-          context_size: Int, size of the context window.
-          negative_samples: Int, number of negative samples.
+          n_context: Int, size of the context window.
+          n_negative_samples: Int, number of negative samples.
           n_vocab: Int, number of tokens in the vocabulary.
           n_dim: Int, size of embedding vectors.
           n_states: Int, number of specific state embeddings.
@@ -35,18 +55,18 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
             matrices.
         """
         super().__init__()
-        if context_size % 2 != 0:
-            raise ValueError(f'Context size {context_size} not divisible by 2.')
-        self.cs = context_size
-        self.ns = negative_samples
+        if n_context % 2 != 0:
+            raise ValueError(f'Context size {n_context} not divisible by 2.')
+        self.cs = n_context
+        self.ns = n_negative_samples
         self.sigma = sigma
-        self.rho = self.init_embeddings(n_vocab, n_dim, sigma)
-        self.alpha = self.init_embeddings(n_vocab, n_dim, sigma)
+        self.word_embeds = self.init_embeddings(n_vocab, n_dim, sigma)
+        self.context_embeds = self.init_embeddings(n_vocab, n_dim, sigma)
         self.rho_state = {}
         self.n_states = n_states
         for i in range(n_states):
-            self.rho_state = self.init_embeddings(n_vocab, n_dim, sigma=0.0001,
-                                                  weight=self.rho.weight)
+            self.rho_state = self.init_embeddings(
+                n_vocab, n_dim, sigma=0.0001, weight=self.word_embeds.weight)
         self.unigram_logits = unigram_logits
 
     @staticmethod
@@ -70,27 +90,33 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
         return nn.Embedding(n_vocab, n_dim, _weight=weight)
 
     def forward(self, batch: Batch):
-        # for each state
-        #   calculate the bernoulli dist probs for +ve and -ve samples
-        #   calculate the loss and return
+        # NOTE: since the states can yield different length texts, do it their
+        #  way by for loop over states, as opposed to forcing same lengths into
+        #  a single Tensor.
+        # TODO: think through bootstrapping and subsampling
 
         # predictions for each state
-        preds = {}
-        for s, state in enumerate(batch.states):
+        logits = []
+        for state in batch.states:
+            # [batch, n_dim]
+            targets = self.word_embeds(state.target_ixs)
+            # [batch, n_dim]
+            contexts = self.context_embeds(state.context_ixs).sum(dim=1)
+            # [batch, n_dim]
+            negative_samples = self.word_embeds(state.negative_sample_ixs)
 
-            # NOTE: it looks like they use the same context, and negative
-            #  samples for the rhos, not the alphas.
-            #  main question now is: how to form up a batch of data?
+            # logits: [batch]
+            positive_logits = (targets * contexts).sum(dim=1)
+            negative_logits = (negative_samples * contexts).sum(dim=1)
 
-            # selecting data points
-            p_mask = torch.range(self.cs / 2, n + self.cs / 2)
+            logits.append((positive_logits, negative_logits))
 
-            n_idx = torch.multinomial(self.unigram_logits, self.ns)
+        loss = self.loss(logits)
 
-            ll_neg = None
-            loss += - (ll_pos + ll_neg + lp_prior)
+        return loss
 
-    def loss(self) -> torch.Tensor:
+    def loss(self, logits: Sequence[(torch.Tensor, torch.Tensor)]) \
+            -> torch.Tensor:
         """Calculate the loss term.
 
         .. math::
@@ -100,16 +126,27 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
                             + \sum_s \log p(\rho^{(s)}|\rho^{(0)})
                             + \sum_{v,i} \log p(x_{vi}|x_{c_{vi}}; \alpha, \rho)
 
+        Args:
+          logits: Dict, mapping Int state ixs to their torch.Tensor logits.
+
         Returns:
           torch.Tensor.  (or Variable?)
         """
         # regularization
         prior = distributions.Normal(loc=0., scale=self.sigma)
-        loss = prior.log_prob(self.rho)
-        loss = loss + prior.log_prob(self.alpha)
+        loss = prior.log_prob(self.word_embeds)
+        loss = loss + prior.log_prob(self.context_embeds)
         local_prior = distributions.Normal(loc=0., scale=self.sigma/100.)
         for i in range(self.n_states):
             # in their code that conditional is this diff
             # https://github.com/mariru/structured_embeddings/blob/master/src/models.py#L326
-            diff = self.rho - self.rho_state[i]
+            diff = self.word_embeds - self.rho_state[i]
             loss = loss + local_prior.log_prob(diff)
+            p_logits, n_logits = logits[i]
+            p_dist = torch.distributions.Bernoulli(logits=p_logits)
+            n_dist = torch.distributions.Bernoulli(logits=n_logits)
+            p_logloss = p_dist.log_prob(1.)
+            n_logloss = n_dist.log_prob(0.)
+            loss = loss + p_logloss
+            loss = loss + n_logloss
+        return loss
