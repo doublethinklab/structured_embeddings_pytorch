@@ -1,4 +1,4 @@
-# Structured, Dynamic Embeddings
+# Structured Embeddings
 
 ## Docker Notes
 
@@ -105,9 +105,10 @@ ctx_mask = tf.concat([rows+cols, rows+cols+4+1], 1)
 array([[0, 1, 2, 3, 5, 6, 7, 8],
        [1, 2, 3, 4, 6, 7, 8, 9]], dtype=int32)>
 
-So we're dealing with column vectors and we have these convenient masks for
-selecting the indices from the data array, which can then be used as vector
-lookup.
+### Negative Sampling
 
-Pytorch deals with row vectors, so we could transpose this mask, or rewrite the
-code for row vectors.
+```python
+unigram_logits = tf.tile(tf.expand_dims(tf.log(tf.constant(d.unigram)), [0]), 
+                         [self.n_minibatch[t], 1])
+n_idx = tf.multinomial(unigram_logits, self.ns)
+```

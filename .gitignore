@@ -3,6 +3,8 @@ Scratch.ipynb
 scratch.py
 secret.json
 Untitled.ipynb
+data/
+dtl/
 
 # proprietary LIWC dictionaries must not be uploaded
 common/nlp/lexicons/liwc/proprietary/
