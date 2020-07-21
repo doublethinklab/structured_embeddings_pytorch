@@ -5,6 +5,7 @@ secret.json
 Untitled.ipynb
 data/
 dtl/
+runs/
 
 # proprietary LIWC dictionaries must not be uploaded
 common/nlp/lexicons/liwc/proprietary/
