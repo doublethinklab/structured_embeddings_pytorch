@@ -102,11 +102,11 @@ class Vocab(IxDict):
         self.n = sum(counts.values())
 
     def doc2ixs(self, tokens):
-        bow = []
+        ixs = []
         for token in tokens:
             if token in self.item_to_ix:
-                bow.append(self[token])
-        return bow
+                ixs.append(self[token])
+        return ixs
 
     @staticmethod
     def file_path(corpus_name):
@@ -180,14 +180,15 @@ class Doc:
 
 class Group:
 
-    def __init__(self, corpus_name: str, name: str, doc_ids: Sequence[str],
-                 n_tokens: int):
+    def __init__(self, corpus_name: str, name: str,
+                 doc_ids: Mapping[str, Sequence[str]],
+                 n_tokens: Mapping[str, int]):
         # NOTE: docs are already saved
         self.corpus_name = corpus_name
         self.name = name
-        self.n_docs = len(doc_ids)
+        self.n_docs = sum(len(v) for v in doc_ids.values())
         self.n_tokens = n_tokens
-        self.doc_ids = self.get_splits(doc_ids)
+        self.doc_ids = doc_ids
         self.generator = {
             'train': self.new_generator('train'),
             'dev': self.new_generator('dev'),
@@ -205,7 +206,11 @@ class Group:
     @classmethod
     def from_docs(cls, corpus_name: str, name: str, docs: Sequence[Doc]):
         doc_ids = [x.doc_id for x in docs]
-        n_tokens = sum(len(x) for x in docs)
+        doc_ids = cls.get_splits(doc_ids)
+        n_tokens = {}
+        for subset, ids in doc_ids.items():
+            split_docs = [x for x in docs if x.doc_id in ids]
+            n_tokens[subset] = sum(len(x) for x in split_docs)
         return cls(corpus_name, name, doc_ids, n_tokens)
 
     def get_batch(self, subset: str, batch_size: int) -> Sequence[int]:
@@ -248,14 +253,11 @@ class Group:
 
     def save(self):
         file_path = self.file_path(self.corpus_name, self.name)
-        doc_ids = []
-        for _doc_ids in self.doc_ids.values():
-            doc_ids += list(_doc_ids)
         with open(file_path, 'w+') as f:
             data = {
                 'corpus_name': self.corpus_name,
                 'name': self.name,
-                'doc_ids': doc_ids,
+                'doc_ids': self.doc_ids,
                 'n_tokens': self.n_tokens,
             }
             f.write(json.dumps(data))

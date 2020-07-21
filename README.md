@@ -110,5 +110,5 @@ array([[0, 1, 2, 3, 5, 6, 7, 8],
 ```python
 unigram_logits = tf.tile(tf.expand_dims(tf.log(tf.constant(d.unigram)), [0]), 
                          [self.n_minibatch[t], 1])
-n_idx = tf.multinomial(unigram_logits, self.ns)
+n_idx = tf.multinomial(unigram_logits, self.n_negative_samples)
 ```

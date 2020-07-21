@@ -29,20 +29,18 @@ class Dataset(TorchDataset):
         self.corpus = corpus
         self.subset = subset
         self.n_batches = n_batches
-        self.token_logits = torch.from_numpy(corpus.vocab.logits())
         self.n_groups = corpus.n_groups
-        self.n_tokens_per_group = [g.n_tokens for g in corpus.groups]
+        self.n_tokens_per_group = [g.n_tokens[subset] for g in corpus.groups]
         self.n_tokens_per_batch = [int(math.ceil(n / n_batches))
                                    for n in self.n_tokens_per_group]
 
     def __getitem__(self, item) -> Sequence[torch.LongTensor]:
-        # in this case `item` is meaningless, it is always the next batch
+        # `item` is meaningless, this function always yields the next batch
         batch_data = []
         for ix in range(self.n_groups):
             n_tokens_to_take = self.n_tokens_per_batch[ix]
             token_ixs = self.corpus.groups[ix].get_batch(
                 self.subset, n_tokens_to_take)
-            print(token_ixs)
             token_ixs = torch.LongTensor(token_ixs)
             batch_data.append(token_ixs)
         return batch_data
@@ -51,7 +49,7 @@ class Dataset(TorchDataset):
         return self.n_batches
 
 
-class CorpusBatch:
+class GroupBatch:
     """Batch for a specific corpus.
 
     NOTE: as opposed to the original TensorFlow implementation, masks for
@@ -74,34 +72,37 @@ class CorpusBatch:
 class Collate:
     """Collate function."""
 
-    def __init__(self, n_context: int, unigram_logits: torch.Tensor,
+    def __init__(self, n_context: int, token_probs: np.array,
                  n_negative_samples: int):
         """Create a new Collate function.
 
         Args:
           n_context: Int, number of words in context window.
-          unigram_logits: torch.Tensor, unnormalized log probabilities for each
+          token_probs: np.array, unnormalized log probabilities for each
             token in the vocab.
           n_negative_samples: Int, number of negative samples to draw.
         """
         self.n_context = n_context
-        self.sample_probs = self.get_sample_probs(unigram_logits)
+        self.sample_probs = self.get_sample_probs(token_probs)
         self.n_negative_samples = n_negative_samples
 
     def __call__(self, items: Sequence[torch.Tensor]) \
-            -> Sequence[CorpusBatch]:
+            -> Sequence[GroupBatch]:
         corpus_batches = []
         for token_ixs in items:
             target_ixs = self.get_target_ixs(token_ixs)
             context_ixs = self.get_context_ixs(token_ixs)
             negative_sample_ixs = self.get_negative_sample_ixs(token_ixs)
-            corpus_batch = CorpusBatch(
+            corpus_batch = GroupBatch(
                 target_ixs, context_ixs, negative_sample_ixs)
             corpus_batches.append(corpus_batch)
         return corpus_batches
 
     def get_target_ixs(self, token_ixs: torch.Tensor) -> torch.Tensor:
         # subtract the context window in order to leave room either side
+        print(token_ixs)
+        print(type(token_ixs))
+        print(token_ixs.shape)
         n_targets = token_ixs.shape[0] - self.n_context
         target_mask = torch.arange(
             int(self.n_context/2), n_targets+int(self.n_context/2))
@@ -113,7 +114,7 @@ class Collate:
         rows = torch.arange(0, hc).unsqueeze(0).repeat([n_targets, 1])
         cols = torch.arange(0, n_targets).unsqueeze(1).repeat(1, hc)
         context_mask = torch.cat([rows + cols, rows + cols + hc + 1], dim=1)
-        return context_mask
+        return token_ixs[context_mask]
 
     def get_negative_sample_ixs(self, token_ixs: torch.Tensor) -> torch.Tensor:
         n_targets = token_ixs.shape[0] - self.n_context
@@ -121,8 +122,10 @@ class Collate:
                                  self.n_negative_samples)
 
     @staticmethod
-    def get_sample_probs(unigram_logits):
-        return torch.exp(unigram_logits)**(3./4.)
+    def get_sample_probs(token_probs):
+        return torch.from_numpy(
+            token_probs ** (3. / 4.)
+            / (token_probs ** (3. / 4.)).sum()).float()
 
 
 class HierarchicalBernoulliEmbeddings(nn.Module):
@@ -143,15 +146,15 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
         super().__init__()
         if n_context % 2 != 0:
             raise ValueError(f'Context size {n_context} not divisible by 2.')
-        self.cs = n_context
-        self.ns = n_negative_samples
+        self.n_context = n_context
+        self.n_negative_samples = n_negative_samples
+        self.n_vocab = n_vocab
+        self.n_dim = n_dim
+        self.n_groups = n_groups
         self.sigma = sigma
         self.word_embeds = self.init_embedding()
         self.context_embeds = self.init_embedding()
         self.group_embeds = []
-        self.n_groups = n_groups
-        self.n_vocab = n_vocab
-        self.n_dim = n_dim
 
     def init_embedding(self, weight: Optional[nn.Parameter] = None) \
             -> nn.Embedding:
@@ -162,7 +165,7 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
             used to initialize an embedding down in the hierarchy with its
             parent.
         """
-        if not weight:
+        if weight is None:
             weight = nn.Parameter(torch.randn((self.n_vocab, self.n_dim)))
         weight = weight * self.sigma
         return nn.Embedding(self.n_vocab, self.n_dim, _weight=weight,
@@ -175,7 +178,7 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
             self.group_embeds.append(
                 self.init_embedding(self.word_embeds.weight))
 
-    def forward(self, batch: Sequence[CorpusBatch]):
+    def forward(self, batch: Sequence[GroupBatch]):
         # NOTE: since the corpus_batches can yield different length texts, do
         #  it their way by for loop over corpus_batches, as opposed to forcing
         #  same lengths into a single Tensor.
@@ -188,13 +191,16 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
             targets = self.word_embeds(corpus_batch.target_ixs)
             # [batch, n_dim]
             contexts = self.context_embeds(corpus_batch.context_ixs).sum(dim=1)
-            # [batch, n_dim]
+            # [batch, n_negs, n_dim]
             negative_samples = self.word_embeds(
                 corpus_batch.negative_sample_ixs)
 
             # logits: [batch]
             positive_logits = (targets * contexts).sum(dim=1)
-            negative_logits = (negative_samples * contexts).sum(dim=1)
+            contexts = contexts.unsqueeze(1).repeat(
+                [1, self.n_negative_samples, 1])
+            negative_logits = (negative_samples * contexts)\
+                .sum(dim=1).sum(dim=1)
 
             logits.append((positive_logits, negative_logits))
 
@@ -221,28 +227,36 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
         """
         # regularization
         prior = distributions.Normal(loc=0., scale=self.sigma)
-        loss = prior.log_prob(self.word_embeds).sum()
-        loss = loss + prior.log_prob(self.context_embeds).sum()
-        local_prior = distributions.Normal(loc=0., scale=self.sigma/100.)
-        for i in range(self.n_states):
-            # in their code that conditional is this diff
-            # https://github.com/mariru/structured_embeddings/blob/master/src/models.py#L326
-            diff = self.word_embeds - self.rho_state[i]
-            loss = loss + local_prior.log_prob(diff)
-            p_logits, n_logits = logits[i]
-            p_dist = torch.distributions.Bernoulli(logits=p_logits)
-            n_dist = torch.distributions.Bernoulli(logits=n_logits)
-            p_logloss = p_dist.log_prob(1.).sum()
-            n_logloss = n_dist.log_prob(0.).sum()
-            loss = loss + p_logloss
-            loss = loss + n_logloss
+        loss = prior.log_prob(self.word_embeds.weight).sum()
+        loss = loss + prior.log_prob(self.context_embeds.weight).sum()
+
+        if self.group_embeds:  # only add this loss after initialized
+            local_prior = distributions.Normal(loc=0., scale=self.sigma/100.)
+            for i in range(self.n_groups):
+                # in their code that conditional is this diff
+                # https://github.com/mariru/structured_embeddings/blob/master/src/models.py#L326
+                diff = self.word_embeds.weight - self.group_embeds[i].weight
+                loss = loss + local_prior.log_prob(diff)
+                p_logits, n_logits = logits[i]
+                p_dist = torch.distributions.Bernoulli(logits=p_logits)
+                n_dist = torch.distributions.Bernoulli(logits=n_logits)
+                p_logloss = p_dist.log_prob(1.).sum()
+                n_logloss = n_dist.log_prob(0.).sum()
+                loss = loss + p_logloss
+                loss = loss + n_logloss
+
         return loss
 
-    def fit(self, data: Dataset, lr: float, n_epochs: int):
+    def fit(self, corpus: data.Corpus, lr: float, n_batches: int,
+            n_epochs: int):
+        train = Dataset(
+            corpus=corpus,
+            subset='train',
+            n_batches=n_batches)
         collate = Collate(
-            self.n_context, dataset.token_logits, self.n_negative_samples)
-        data_loader = dataloader.DataLoader(
-            dataset=data,
+            self.n_context, corpus.vocab.probs(), self.n_negative_samples)
+        train_loader = dataloader.DataLoader(
+            dataset=train,
             batch_size=1,
             collate_fn=collate,
             shuffle=False)
@@ -252,8 +266,8 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
         # 1. fit the global embeddings
         global_step = 0
         for _ in range(n_epochs):
-            with tqdm(total=len(data_loader), desc='Global') as pbar:
-                for batch in data_loader:
+            with tqdm(total=len(train_loader), desc='Global') as pbar:
+                for batch in train_loader:
                     global_step += 1
                     loss = self.forward(batch)
                     loss.backward()
@@ -266,8 +280,8 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
         # 2. fit the group embeddings
         self.init_group_embeddings()
         for _ in range(n_epochs):
-            with tqdm(total=len(data_loader), desc='Groups') as pbar:
-                for batch in data_loader:
+            with tqdm(total=len(train_loader), desc='Groups') as pbar:
+                for batch in train_loader:
                     loss = self.forward(batch)
                     loss.backward()
                     optimizer.step()

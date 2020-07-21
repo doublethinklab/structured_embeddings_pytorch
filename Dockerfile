@@ -104,6 +104,6 @@ RUN \
 COPY . sdemb/
 
 # run jupyter
-CMD jupyter notebook --ip 0.0.0.0 --no-browser --allow-root
+# CMD jupyter notebook --ip 0.0.0.0 --no-browser --allow-root
 
 # docker run -it -p 8888:8888 test:v1

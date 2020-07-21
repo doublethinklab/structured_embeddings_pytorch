@@ -6,26 +6,31 @@ from sdemb import data
 
 class FakeData(data.RawData):
 
-    def __init__(self):
+    def __init__(self, min_tok_count=1, n_vocab=24):
         super().__init__(
             corpus_name='test',
             group_names=['g1', 'g2'],
-            min_tok_count=2,
-            n_vocab=2,
+            min_tok_count=min_tok_count,
+            n_vocab=n_vocab,
             subsample_threshold=0.5)
 
     def doc_ids(self, group_name):
         return [f'{group_name}.{i}' for i in range(1, 4)]
 
     def doc_tokens(self, doc_id):
-        # all groups end up with three docs:
-        # [c, d]
-        # [e, f, g, h]
-        # [g, h, i, j, k, l]
-        # so counts are {g: 2, h: 2}, making it to the vocab.
+        # g1:
+        # g1.1: [b c d e f g h i j k]
+        # g1.2: [c d e f g h i j k l]
+        # g1.3: [d e f g h i j k l m n o]
+        # g2:
+        # g2.1: [c d e f g h i j k l]
+        # g2.2: [d e f g h i j k l m n o p q r s]
+        # g2.3: [e g h i j k l m n o p q r s t u v w x]
+        g = int(doc_id[1])
         i = int(doc_id.split('.')[-1])
-        n = i * 2
-        return [string.ascii_lowercase[j+n] for j in range(n)]
+        a = g * i
+        b = min(11, max(g * i * 4, 21))
+        return [string.ascii_lowercase[j] for j in range(a, b)]
 
     @staticmethod
     def remove_test_data():

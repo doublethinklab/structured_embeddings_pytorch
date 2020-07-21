@@ -30,22 +30,6 @@ test_tok_ixs = [
 ]
 
 
-def create_folders():
-    corpus_dir = 'data/test'
-    if not os.path.exists(corpus_dir):
-        os.mkdir(corpus_dir)
-    for group_name in test_groups:
-        group_dir = os.path.join(corpus_dir, group_name)
-        if not os.path.exists(group_dir):
-            os.mkdir(group_dir)
-
-
-def remove_folders():
-    corpus_dir = 'data/test'
-    if os.path.exists(corpus_dir):
-        shutil.rmtree(corpus_dir)
-
-
 class TestIxDict(unittest.TestCase):
 
     def test_entities_come_out_in_ix_order(self):
@@ -60,9 +44,10 @@ class TestIxDict(unittest.TestCase):
 class TestVocab(unittest.TestCase):
 
     def setUp(self):
-        create_folders()
+        self.raw_data = fake_data.FakeData()
+        data.Corpus.create_folders(self.raw_data)
 
-    def test_doc2bow(self):
+    def test_doc2ixs(self):
         counts = {'a': 4, 'b': 3}
         vocab = data.Vocab('test', counts)
         bow = vocab.doc2ixs(['a', 'c', 'b'])
@@ -101,13 +86,14 @@ class TestVocab(unittest.TestCase):
         self.assertTrue(np.array_equal(expected, probs))
 
     def tearDown(self):
-        remove_folders()
+        self.raw_data.remove_test_data()
 
 
 class TestDoc(unittest.TestCase):
 
     def setUp(self):
-        create_folders()
+        self.raw_data = fake_data.FakeData()
+        data.Corpus.create_folders(self.raw_data)
 
     def test_save(self):
         doc = data.Doc('test', 'g1', 'g1.1', test_tok_ixs[0])
@@ -136,13 +122,15 @@ class TestDoc(unittest.TestCase):
             self.assertEqual(mapping[ix], tok_ix)
 
     def tearDown(self):
-        remove_folders()
+        self.raw_data.remove_test_data()
 
 
 class TestGroup(unittest.TestCase):
 
     def setUp(self):
-        create_folders()
+        self.raw_data = fake_data.FakeData()
+        data.Corpus.create_folders(self.raw_data)
+        self.corpus = data.Corpus.from_data(self.raw_data)
 
     def get_docs(self):
         docs = []
@@ -160,8 +148,18 @@ class TestGroup(unittest.TestCase):
             jdata = json.loads(f.read())
         self.assertEqual('test', jdata['corpus_name'])
         self.assertEqual('g1', jdata['name'])
-        self.assertEqual(['g1.1', 'g1.2', 'g1.3'], jdata['doc_ids'])
-        self.assertEqual(15, jdata['n_tokens'])
+        expected = {
+            'train': ['g1.1'],
+            'dev': ['g1.2'],
+            'test': ['g1.3']
+        }
+        self.assertEqual(expected, jdata['doc_ids'])
+        expected = {
+            'train': 5,
+            'dev': 5,
+            'test': 5,
+        }
+        self.assertEqual(expected, jdata['n_tokens'])
 
     def test_load(self):
         group = data.Group.from_docs('test', 'g1', self.get_docs())
@@ -175,7 +173,7 @@ class TestGroup(unittest.TestCase):
             'test': ['g1.3'],
         }
         self.assertEqual(doc_ids, group.doc_ids)
-        self.assertEqual(15, group.n_tokens)
+        self.assertEqual({'train': 5, 'dev': 5, 'test': 5}, group.n_tokens)
 
     def test_get_splits(self):
         doc_ids = data.Group.get_splits(list(range(6)))
@@ -187,27 +185,27 @@ class TestGroup(unittest.TestCase):
         self.assertEqual(expected, doc_ids)
 
     def test_get_batch(self):
-        group = data.Group.from_docs('test', 'g1', self.get_docs())
+        group = self.corpus.groups[0]
+        # the one doc is: [0 -> 8]
         expected = [
-            [1, 2, 3],
-            [4, 3]
+            [0, 1, 2, 3, 4, 5],
+            [6, 7, 8]
         ]
-        for ix in range(2):
-            batch = group.get_batch('train', 3)
-            self.assertEqual(expected[ix], batch)
-        # test it resets
-        for ix in range(2):
-            batch = group.get_batch('train', 3)
-            self.assertEqual(expected[ix], batch)
+        batch_size = 6
+        for _ in range(2):  # test it resets
+            for ix in range(2):
+                batch = group.get_batch('train', batch_size)
+                self.assertEqual(expected[ix], batch)
 
     def tearDown(self):
-        remove_folders()
+        self.raw_data.remove_test_data()
 
 
 class TestCorpus(unittest.TestCase):
 
     def setUp(self):
-        create_folders()
+        self.raw_data = fake_data.FakeData()
+        data.Corpus.create_folders(self.raw_data)
 
     def test_from_data(self):
         raw_data = fake_data.FakeData()
@@ -218,7 +216,9 @@ class TestCorpus(unittest.TestCase):
     def test_create_vocab(self):
         raw_data = fake_data.FakeData()
         vocab = data.Corpus.create_vocab(raw_data)
-        expected = {'g': 2, 'h': 2}
+        expected = {
+            'c': 1, 'd': 1, 'e': 2, 'f': 2, 'g': 3,
+            'h': 3, 'i': 3, 'j': 3, 'k': 3}
         self.assertEqual(expected, vocab.counts)
 
     def test_create_group_dict(self):
@@ -243,8 +243,8 @@ class TestCorpus(unittest.TestCase):
         with open(corpus.file_path(corpus.name)) as f:
             jdata = json.loads(f.read())
         self.assertEqual('test', jdata['name'])
-        self.assertEqual(2, jdata['min_tok_count'])
-        self.assertEqual(2, jdata['n_vocab'])
+        self.assertEqual(1, jdata['min_tok_count'])
+        self.assertEqual(24, jdata['n_vocab'])
         self.assertEqual(0.5, jdata['subsample_threshold'])
 
     def test_load(self):
@@ -253,8 +253,8 @@ class TestCorpus(unittest.TestCase):
         corpus.save()
         corpus = data.Corpus.load('test')
         self.assertEqual('test', corpus.name)
-        self.assertEqual(2, corpus.min_tok_count)
-        self.assertEqual(2, corpus.n_vocab)
+        self.assertEqual(1, corpus.min_tok_count)
+        self.assertEqual(24, corpus.n_vocab)
         self.assertEqual(0.5, corpus.subsample_threshold)
 
     def test_load_groups(self):
@@ -275,8 +275,8 @@ class TestCorpus(unittest.TestCase):
         g2 = data.Group.load('test', 'g2')
         self.assertEqual(3, g1.n_docs)
         self.assertEqual(3, g2.n_docs)
-        self.assertEqual(4, g1.n_tokens)
-        self.assertEqual(4, g2.n_tokens)
+        self.assertEqual({'train': 9, 'dev': 9, 'test': 8}, g1.n_tokens)
+        self.assertEqual({'train': 9, 'dev': 7, 'test': 5}, g2.n_tokens)
 
     def test_subsample(self):
         token_ixs = [0, 0, 0, 1, 0]
@@ -287,4 +287,4 @@ class TestCorpus(unittest.TestCase):
         self.assertEqual(expected, token_ixs)
 
     def tearDown(self):
-        remove_folders()
+        self.raw_data.remove_test_data()
