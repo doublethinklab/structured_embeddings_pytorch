@@ -100,7 +100,6 @@ class Vocab(IxDict):
         self.corpus_name = corpus_name
         self.counts = counts
         self.n = sum(counts.values())
-
     def doc2ixs(self, tokens):
         ixs = []
         for token in tokens:

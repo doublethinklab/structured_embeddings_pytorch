@@ -13,8 +13,7 @@ from typing import Mapping, Optional, Sequence, Union
 import numpy as np
 import tensorboardX
 import torch
-from torch import distributions, nn
-from torch.optim import sparse_adam
+from torch import distributions, nn, optim
 from torch.utils.data import dataloader
 from torch.utils.data.dataset import Dataset as TorchDataset
 from tqdm.notebook import tqdm
@@ -86,8 +85,9 @@ class Collate:
         self.sample_probs = self.get_sample_probs(token_probs)
         self.n_negative_samples = n_negative_samples
 
-    def __call__(self, items: Sequence[torch.Tensor]) \
+    def __call__(self, items: Sequence[Sequence[torch.Tensor]]) \
             -> Sequence[GroupBatch]:
+        items = items[0]  # using DataLoader wraps batch in a dim
         corpus_batches = []
         for token_ixs in items:
             target_ixs = self.get_target_ixs(token_ixs)
@@ -100,9 +100,6 @@ class Collate:
 
     def get_target_ixs(self, token_ixs: torch.Tensor) -> torch.Tensor:
         # subtract the context window in order to leave room either side
-        print(token_ixs)
-        print(type(token_ixs))
-        print(token_ixs.shape)
         n_targets = token_ixs.shape[0] - self.n_context
         target_mask = torch.arange(
             int(self.n_context/2), n_targets+int(self.n_context/2))
@@ -235,7 +232,8 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
             for i in range(self.n_groups):
                 # in their code that conditional is this diff
                 # https://github.com/mariru/structured_embeddings/blob/master/src/models.py#L326
-                diff = self.word_embeds.weight - self.group_embeds[i].weight
+                diff = (self.word_embeds.weight
+                        - self.group_embeds[i].weight).sum()
                 loss = loss + local_prior.log_prob(diff)
                 p_logits, n_logits = logits[i]
                 p_dist = torch.distributions.Bernoulli(logits=p_logits)
@@ -244,6 +242,9 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
                 n_logloss = n_dist.log_prob(0.).sum()
                 loss = loss + p_logloss
                 loss = loss + n_logloss
+
+        # gradient ascent
+        loss = loss * -1
 
         return loss
 
@@ -260,8 +261,8 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
             batch_size=1,
             collate_fn=collate,
             shuffle=False)
-        optimizer = sparse_adam.SparseAdam(params=self.parameters(), lr=lr)
-        writer = tensorboardX.SummaryWriter()
+        optimizer = optim.Adam(params=self.parameters(), lr=lr)
+        writer = tensorboardX.SummaryWriter('temp/runs')
 
         # 1. fit the global embeddings
         global_step = 0
@@ -273,8 +274,8 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
                     loss.backward()
                     optimizer.step()
                     self.zero_grad()
-                    writer.add_scalars(
-                        'loss', loss.detach().cpu().numpy(), global_step)
+                    writer.add_scalar(
+                        'loss', float(loss.detach().cpu().numpy()), global_step)
                     pbar.update()
 
         # 2. fit the group embeddings
@@ -286,8 +287,8 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
                     loss.backward()
                     optimizer.step()
                     self.zero_grad()
-                    writer.add_scalars(
-                        'loss', loss.detach().cpu().numpy(), global_step)
+                    writer.add_scalar(
+                        'loss', float(loss.detach().cpu().numpy()), global_step)
                     pbar.update()
 
         writer.close()
