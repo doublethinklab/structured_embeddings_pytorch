@@ -128,7 +128,8 @@ class Collate:
 class HierarchicalBernoulliEmbeddings(nn.Module):
 
     def __init__(self, n_context: int, n_negative_samples: int, n_vocab: int,
-                 n_dim: int, n_groups: int, sigma: float):
+                 n_dim: int, n_groups: int, sigma: float,
+                 initial_embeds: Optional[np.ndarray] = None):
         """Create a new Hierarchical Bernoulli model.
 
         Args:
@@ -149,6 +150,7 @@ class HierarchicalBernoulliEmbeddings(nn.Module):
         self.n_dim = n_dim
         self.n_groups = n_groups
         self.sigma = sigma
+        # TODO: gensim didn't train context embeds, so back to square one
         self.word_embeds = self.init_embedding()
         self.context_embeds = self.init_embedding()
         self.group_embeds = []

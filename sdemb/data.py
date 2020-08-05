@@ -7,13 +7,25 @@ import json
 import math
 import os
 import types
-from typing import Mapping, Sequence, Union
+from typing import Mapping, Optional, Sequence, Union
 
 import numpy as np
 from tqdm.notebook import tqdm
 
 
 data_dir = 'data'
+
+
+class ReusableGenerator:
+
+    def __init__(self, generator_factory: types.FunctionType,
+                 callback: Optional[types.FunctionType] = None):
+        self.generator_factory = generator_factory
+        self.callback = callback
+
+    def __iter__(self):
+        for item in self.generator_factory():
+            yield item
 
 
 class IxDict:
@@ -100,6 +112,7 @@ class Vocab(IxDict):
         self.corpus_name = corpus_name
         self.counts = counts
         self.n = sum(counts.values())
+
     def doc2ixs(self, tokens):
         ixs = []
         for token in tokens:
@@ -260,6 +273,11 @@ class Group:
                 'n_tokens': self.n_tokens,
             }
             f.write(json.dumps(data))
+
+    def token_generator(self):
+        for subset in ['train', 'dev', 'test']:
+            for doc in self.docs(subset):
+                yield doc.token_ixs
 
 
 class RawData:
@@ -463,3 +481,8 @@ class Corpus:
             if keep:
                 subsampled.append(ix)
         return subsampled
+
+    def token_generator(self):
+        for group in self.groups:
+            for token in group.token_generator():
+                yield token
