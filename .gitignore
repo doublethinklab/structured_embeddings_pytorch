@@ -6,6 +6,7 @@ Untitled.ipynb
 data/
 dtl/
 runs/
+THOUGHTS.md
 
 # proprietary LIWC dictionaries must not be uploaded
 common/nlp/lexicons/liwc/proprietary/

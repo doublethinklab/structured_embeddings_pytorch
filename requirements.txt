@@ -1,4 +1,0 @@
-jupyter==1.0.0
-tensorboardX==2.1
-torch==1.5.1
-tqdm==4.48.0
